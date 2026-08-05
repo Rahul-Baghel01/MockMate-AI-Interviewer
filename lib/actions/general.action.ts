@@ -6,6 +6,7 @@ import { groq } from "@ai-sdk/groq";
 import { db } from "@/firebase/admin";
 import { feedbackSchema } from "@/constants";
 import { getCurrentUser } from "@/lib/actions/auth.action";
+import { attachFeedbackToReplay } from "@/lib/replay";
 
 export async function createFeedback({ interviewId, transcript, feedbackId }: CreateFeedbackParams) {
   try {
@@ -38,6 +39,7 @@ export async function createFeedback({ interviewId, transcript, feedbackId }: Cr
     const feedbackRef = feedbackId ? db.collection("feedback").doc(feedbackId) : db.collection("feedback").doc();
 
     await feedbackRef.set(feedback);
+    await attachFeedbackToReplay(interviewId, feedback);
     return { success: true, feedbackId: feedbackRef.id };
   } catch {
     return { success: false };

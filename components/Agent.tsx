@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioLines, LoaderCircle, Mic, PhoneOff, Sparkles, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -9,6 +9,9 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { vapi } from "@/lib/vapi.sdk";
 import { createFeedback } from "@/lib/actions/general.action";
+import { AIAvatar } from "@/components/avatar/AIAvatar";
+import { useAvatarState } from "@/hooks/useAvatarState";
+import { saveInterviewReplay } from "@/lib/replay";
 
 enum CallStatus {
   INACTIVE = "INACTIVE",
@@ -20,30 +23,83 @@ enum CallStatus {
 interface SavedMessage {
   role: "user" | "system" | "assistant";
   content: string;
+  timestamp: number;
 }
 
-const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, companyProfile }: AgentProps) => {
+const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, companyProfile, resumeContext, resumeAnalysisId }: AgentProps) => {
   const router = useRouter();
   const [callStatus, setCallStatus] = useState(CallStatus.INACTIVE);
   const [messages, setMessages] = useState<SavedMessage[]>([]);
+  const messagesRef = useRef<SavedMessage[]>([]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isCreatingFeedback, setIsCreatingFeedback] = useState(false);
   const feedbackStarted = useRef(false);
+  const callStartedAt = useRef(0);
+  const vapiCallId = useRef<string | undefined>(undefined);
+  const { state: avatarState, changeState: setAvatarState, isBlinking, isVisible } = useAvatarState();
+
+  const persistReplay = useCallback(async (recordingUrl?: string, started = callStartedAt.current, ended = Date.now()) => {
+    const captured = messagesRef.current;
+    if (!interviewId || !userId || captured.length === 0) return;
+    const transcript: ReplayTranscriptItem[] = captured.map((message, index) => ({
+      id: `${index}-${message.timestamp}`,
+      role: message.role === "assistant" ? "assistant" : "user",
+      content: message.content,
+      timestamp: message.timestamp,
+      duration: Math.max(1, (captured[index + 1]?.timestamp ?? (ended - started) / 1000) - message.timestamp),
+    }));
+    await saveInterviewReplay({
+      interviewId, vapiCallId: vapiCallId.current, recordingUrl, transcript,
+      questions: transcript.filter((item) => item.role === "assistant").map((item) => ({ text: item.content, timestamp: item.timestamp, duration: item.duration })),
+      answers: transcript.filter((item) => item.role === "user").map((item) => ({ text: item.content, timestamp: item.timestamp, duration: item.duration })),
+      startedAt: new Date(started).toISOString(), completedAt: new Date(ended).toISOString(),
+      totalDuration: Math.max(0, (ended - started) / 1000), company, resumeContext, resumeAnalysisId,
+    });
+  }, [company, interviewId, resumeAnalysisId, resumeContext, userId]);
 
   useEffect(() => {
-    const onCallStart = () => setCallStatus(CallStatus.ACTIVE);
-    const onCallEnd = () => setCallStatus(CallStatus.FINISHED);
+    const onCallStart = () => {
+      callStartedAt.current = Date.now();
+      setCallStatus(CallStatus.ACTIVE);
+      setAvatarState("idle");
+    };
+    const onCallEnd = () => {
+      setCallStatus(CallStatus.FINISHED);
+      setAvatarState("idle");
+    };
     const onMessage = (message: Message) => {
-      if (message.type === "transcript" && message.transcriptType === "final") {
-        const role = message.role === "assistant" ? "assistant" : "user";
-        setMessages((currentMessages) => [...currentMessages, { role, content: message.transcript }]);
+      if (message.type === "end-of-call-report") {
+        const recordingUrl = message.artifact?.stereoRecordingUrl || message.artifact?.recordingUrl || message.call?.artifact?.stereoRecordingUrl || message.call?.artifact?.recordingUrl;
+        const started = message.startedAt ? new Date(message.startedAt).getTime() : callStartedAt.current;
+        const ended = message.endedAt ? new Date(message.endedAt).getTime() : Date.now();
+        void persistReplay(recordingUrl, started, ended);
+        return;
+      }
+      if (message.type === "transcript") {
+        if (message.role === "user") {
+          setAvatarState(message.transcriptType === "final" ? "thinking" : "listening");
+        }
+        if (message.transcriptType !== "final") return;
+        const role: SavedMessage["role"] = message.role === "assistant" ? "assistant" : "user";
+        setMessages((currentMessages) => {
+          const next = [...currentMessages, { role, content: message.transcript, timestamp: Math.max(0, (Date.now() - callStartedAt.current) / 1000) }];
+          messagesRef.current = next;
+          return next;
+        });
       }
     };
-    const onSpeechStart = () => setIsSpeaking(true);
-    const onSpeechEnd = () => setIsSpeaking(false);
+    const onSpeechStart = () => {
+      setIsSpeaking(true);
+      setAvatarState("speaking");
+    };
+    const onSpeechEnd = () => {
+      setIsSpeaking(false);
+      setAvatarState("idle");
+    };
     const onError = () => {
       setCallStatus(CallStatus.INACTIVE);
       setIsCreatingFeedback(false);
+      setAvatarState("concerned");
       toast.error("The interview call could not be started.");
     };
 
@@ -62,7 +118,7 @@ const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, 
       vapi.off("speech-end", onSpeechEnd);
       vapi.off("error", onError);
     };
-  }, []);
+  }, [persistReplay, setAvatarState]);
 
   useEffect(() => {
     if (callStatus !== CallStatus.FINISHED || feedbackStarted.current) return;
@@ -74,6 +130,7 @@ const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, 
     }
 
     feedbackStarted.current = true;
+    void persistReplay();
     setIsCreatingFeedback(true);
     void createFeedback({ interviewId, transcript: messages, feedbackId }).then((result) => {
       if (result.success) {
@@ -85,7 +142,7 @@ const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, 
         toast.error("Feedback could not be generated. Please try ending the call again.");
       }
     });
-  }, [callStatus, feedbackId, interviewId, messages, router, userId]);
+  }, [callStatus, feedbackId, interviewId, messages, persistReplay, router, userId]);
 
   const handleCall = async () => {
     const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
@@ -96,16 +153,19 @@ const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, 
 
     feedbackStarted.current = false;
     setMessages([]);
+    messagesRef.current = [];
     setIsCreatingFeedback(false);
     setCallStatus(CallStatus.CONNECTING);
 
     try {
-      await vapi.start(assistantId, {
+      const call = await vapi.start(assistantId, {
         variableValues: {
           questions: (questions ?? []).map((question) => `- ${question}`).join("\n"),
           companyContext: `${company || "General"}: ${companyProfile?.style || "Balanced and practical"}. Focus on ${companyProfile?.focus || "role fundamentals"}. Principles: ${companyProfile?.principles?.join(", ") || "none"}.`,
         },
+        artifactPlan: { recordingEnabled: true },
       });
+      vapiCallId.current = call?.id ?? undefined;
     } catch {
       setCallStatus(CallStatus.INACTIVE);
       toast.error("The interview call could not be started.");
@@ -139,13 +199,8 @@ const Agent = ({ userName, userId, interviewId, feedbackId, questions, company, 
 
         <div className="mx-auto mt-9 grid max-w-4xl gap-5 md:grid-cols-[1fr_auto_1fr] md:items-center">
           <div className="rounded-3xl border border-primary-200/20 bg-gradient-to-b from-[#171532] to-[#08090D] p-6 text-center shadow-lg shadow-primary-200/5">
-            <div className="relative mx-auto flex size-28 items-center justify-center">
-              {isSpeaking && <><span className="absolute inset-0 animate-ping rounded-full border border-primary-200/50" /><span className="absolute -inset-3 animate-pulse rounded-full border border-primary-200/20" /></>}
-              <div className="relative flex size-22 items-center justify-center rounded-full bg-gradient-to-l from-white to-primary-200 shadow-xl shadow-primary-200/20">
-                <Image src="/ai-avatar.png" alt="AI interviewer" width={65} height={54} className="object-cover" priority />
-              </div>
-            </div>
-            <div className="mt-5 flex items-center justify-center gap-2"><Volume2 size={16} className="text-primary-200" aria-hidden="true" /><h3 className="text-lg font-semibold text-white">AI Interviewer</h3></div>
+            <AIAvatar state={avatarState} isBlinking={isBlinking} isVisible={isVisible} />
+            <div className="mt-1 flex items-center justify-center gap-2"><Volume2 size={16} className="text-primary-200" aria-hidden="true" /><h3 className="text-lg font-semibold text-white">AI Interviewer</h3></div>
             <p className="mt-1 text-sm text-light-400">Guiding your session</p>
           </div>
 

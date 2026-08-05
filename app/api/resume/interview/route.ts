@@ -17,7 +17,11 @@ export async function POST(request: Request) {
     }
 
     const latestDocument = querySnapshot.docs
-      .map((document) => ({ id: document.id, ...(document.data() as Record<string, unknown>) }))
+      .map((document): Record<string, unknown> & { id: string } => ({ id: document.id, ...document.data() }))
+      .filter((document) => {
+        const validation = document.validation as ResumeValidationResult | undefined;
+        return validation?.isResume === true && validation.confidence >= 70;
+      })
       .sort((left, right) => String((right as { uploadedAt?: string }).uploadedAt ?? "").localeCompare(String((left as { uploadedAt?: string }).uploadedAt ?? "")))[0] as { id: string; analysis?: ResumeAnalysis; uploadedAt?: string } | undefined;
     const resumeAnalysis = latestDocument;
     if (!resumeAnalysis?.analysis) {

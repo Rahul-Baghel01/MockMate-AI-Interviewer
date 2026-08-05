@@ -6,6 +6,106 @@ import pdf from "pdf-parse";
 
 const fallbackTopics = ["React", "Node.js", "TypeScript", "Firebase", "Next.js", "AWS", "Docker", "SQL", "REST APIs"];
 
+const resumeSectionPatterns: Array<[string, RegExp]> = [
+  ["professional summary", /\b(professional\s+summary|career\s+summary|profile|objective)\b/i],
+  ["experience", /\b(work\s+experience|professional\s+experience|employment|work\s+history)\b/i],
+  ["education", /\b(education|academic\s+background|qualifications?)\b/i],
+  ["skills", /\b(technical\s+skills|core\s+competencies|skills|technologies)\b/i],
+  ["projects", /\b(projects?|portfolio)\b/i],
+  ["internship", /\b(internships?|trainee)\b/i],
+  ["certifications", /\b(certifications?|licenses?)\b/i],
+  ["achievements", /\b(achievements?|awards?|honors?)\b/i],
+];
+
+const identityPatterns: Array<[string, RegExp]> = [
+  ["email", /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i],
+  ["phone", /(?:\+?\d[\d\s().-]{7,}\d)/],
+  ["LinkedIn", /\b(?:linkedin\.com\/in\/|linkedin\b)/i],
+  ["GitHub", /\b(?:github\.com\/|github\b)/i],
+];
+
+const supportingProfessionalPatterns = [
+  /\b(software|senior|junior|lead|manager|engineer|developer|analyst|consultant|designer|architect|specialist|intern)\b/i,
+  /\b(bachelor|master|b\.?tech|m\.?tech|b\.?sc|m\.?sc|mba|ph\.?d|degree|university|college)\b/i,
+  /\b(19|20)\d{2}\s*(?:[-–—]|to)\s*(?:(?:19|20)\d{2}|present|current)\b/i,
+  /\b(responsible for|developed|implemented|managed|designed|built|delivered|collaborated|improved)\b/i,
+];
+
+const nonResumePatterns: Array<[string, RegExp]> = [
+  ["question paper or assignment", /\b(question\s+paper|answer\s+all|assignment|marks?\s*[:\-]|semester\s+examination)\b/i],
+  ["invoice", /\b(invoice|bill\s+to|amount\s+due|subtotal|tax\s+invoice)\b/i],
+  ["certificate", /\b(this\s+is\s+to\s+certify|certificate\s+of|hereby\s+certif)\b/i],
+  ["research paper or article", /\b(abstract|keywords|methodology|references|journal|doi:)\b/i],
+  ["syllabus or class notes", /\b(syllabus|course\s+outcomes?|unit\s+[ivx\d]+|lecture\s+notes|chapter\s+\d+)\b/i],
+  ["legal document", /\b(hereinafter|whereas|terms\s+and\s+conditions|jurisdiction)\b/i],
+];
+
+function localResumeValidation(resumeText: string): ResumeValidationResult {
+  const text = sanitizeResumeText(resumeText);
+  if (text.length < 250) {
+    return { isResume: false, confidence: 0, reason: "The document does not contain enough readable text.", detectedSections: [] };
+  }
+
+  const detectedSections = resumeSectionPatterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const identityIndicators = identityPatterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const professionalSignals = supportingProfessionalPatterns.filter((pattern) => pattern.test(text)).length;
+  const negativeIndicators = nonResumePatterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const hasProfessionalSection = detectedSections.some((section) => ["experience", "education", "skills", "projects", "internship", "certifications"].includes(section));
+
+  let confidence = 20;
+  confidence += Math.min(detectedSections.length, 5) * 10;
+  confidence += Math.min(identityIndicators.length, 2) * 10;
+  confidence += Math.min(professionalSignals, 3) * 6;
+  confidence -= negativeIndicators.length * 18;
+  confidence = Math.max(0, Math.min(95, confidence));
+
+  const meetsStructure = detectedSections.length >= 2 && identityIndicators.length >= 1 && hasProfessionalSection && professionalSignals >= 1;
+  const looksPrimarilyNonResume = negativeIndicators.length >= 2 || (negativeIndicators.length >= 1 && detectedSections.length < 3);
+  const isResume = meetsStructure && !looksPrimarilyNonResume && confidence >= 70;
+
+  const reason = isResume
+    ? `Found ${detectedSections.length} resume sections, contact information, and professional history indicators.`
+    : looksPrimarilyNonResume
+      ? `The document appears to be a ${negativeIndicators.join(" or ")} rather than a professional resume.`
+      : "The document lacks a strong combination of contact details and professional resume sections.";
+
+  return { isResume, confidence, reason, detectedSections };
+}
+
+export async function validateResumeDocument(resumeText: string): Promise<ResumeValidationResult> {
+  const localResult = localResumeValidation(resumeText);
+  if (!localResult.isResume || localResult.confidence < 70 || !process.env.OPENAI_API_KEY) return localResult;
+
+  try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const response = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "You are a document classifier. Determine whether the provided document is a professional resume or CV. A resume normally contains several of these: candidate identity, contact information, skills, education, work experience, projects, internships, certifications, achievements. Do not classify certificates, assignments, invoices, research papers, notes, articles, reports, or syllabi as resumes. Return only valid JSON with isResume (boolean), confidence (0-100), reason (string), and detectedSections (string array).",
+        },
+        { role: "user", content: `Classify this document:\n\n${resumeText}` },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0]?.message?.content ?? "{}") as Partial<ResumeValidationResult>;
+    const confidence = Math.max(0, Math.min(100, Number(parsed.confidence) || 0));
+    const detectedSections = Array.isArray(parsed.detectedSections) ? parsed.detectedSections.filter((item): item is string => typeof item === "string") : localResult.detectedSections;
+    const isResume = parsed.isResume === true && confidence >= 70;
+    return {
+      isResume,
+      confidence,
+      reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : isResume ? "The document matches a professional resume structure." : "The document could not be confirmed as a professional resume.",
+      detectedSections,
+    };
+  } catch (error) {
+    console.error("Resume classification failed; using conservative local validation", error);
+    return localResult;
+  }
+}
+
 export async function extractResumeText(buffer: Buffer) {
   try {
     const data = await pdf(buffer);

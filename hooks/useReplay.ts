@@ -1,0 +1,11 @@
+"use client";
+import { RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+export function useReplay(replay: InterviewReplay) {
+  const audioRef = useRef<HTMLAudioElement>(null); const [currentTime, setCurrentTime] = useState(0); const [duration, setDuration] = useState(replay.totalDuration || 0); const [isPlaying, setIsPlaying] = useState(false); const [speed, setSpeedState] = useState(1); const [volume, setVolumeState] = useState(1); const [search, setSearch] = useState("");
+  useEffect(() => { const audio = audioRef.current; if (!audio) return; const update = () => setCurrentTime(audio.currentTime); const loaded = () => setDuration(audio.duration || replay.totalDuration); const play = () => setIsPlaying(true); const pause = () => setIsPlaying(false); audio.addEventListener("timeupdate", update); audio.addEventListener("loadedmetadata", loaded); audio.addEventListener("play", play); audio.addEventListener("pause", pause); audio.addEventListener("ended", pause); return () => { audio.removeEventListener("timeupdate", update); audio.removeEventListener("loadedmetadata", loaded); audio.removeEventListener("play", play); audio.removeEventListener("pause", pause); audio.removeEventListener("ended", pause); }; }, [replay.totalDuration]);
+  const seek = useCallback((time: number) => { if (audioRef.current) audioRef.current.currentTime = Math.max(0, Math.min(time, audioRef.current.duration || replay.totalDuration)); setCurrentTime(time); }, [replay.totalDuration]);
+  const toggle = useCallback(() => { const audio = audioRef.current; if (!audio) return; if (audio.paused) void audio.play(); else audio.pause(); }, []);
+  const setSpeed = useCallback((value: number) => { if (audioRef.current) audioRef.current.playbackRate = value; setSpeedState(value); }, []); const setVolume = useCallback((value: number) => { if (audioRef.current) audioRef.current.volume = value; setVolumeState(value); }, []);
+  const activeId = useMemo(() => replay.transcript.findLast((item) => item.timestamp <= currentTime)?.id, [currentTime, replay.transcript]);
+  return { audioRef: audioRef as RefObject<HTMLAudioElement>, currentTime, duration, isPlaying, speed, volume, search, setSearch, activeId, seek, toggle, setSpeed, setVolume };
+}

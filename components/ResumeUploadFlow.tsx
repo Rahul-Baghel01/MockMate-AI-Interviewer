@@ -15,6 +15,14 @@ interface ResumeUploadFlowProps {
 
 type ResumeStatus = "idle" | "uploading" | "ready" | "error";
 
+interface ResumeAnalyzeErrorResponse {
+  success: false;
+  code?: ResumeAnalyzeErrorCode;
+  message?: string;
+  error?: string;
+  validation?: Pick<ResumeValidationResult, "confidence" | "reason" | "detectedSections">;
+}
+
 export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
@@ -23,6 +31,8 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
   const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
   const [questions, setQuestions] = useState<string[]>([]);
   const [startingInterview, setStartingInterview] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [validationReason, setValidationReason] = useState("");
 
   const resumeScore = Math.min(100, 60 + (analysis?.skills.length ?? 0) * 3 + (analysis?.projects.length ?? 0) * 4 + (analysis?.experience.length ?? 0) * 2);
 
@@ -60,6 +70,10 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
     setFile(selectedFile);
     setStatus("uploading");
     setProgress(20);
+    setAnalysis(null);
+    setQuestions([]);
+    setUploadError("");
+    setValidationReason("");
 
     try {
       const formData = new FormData();
@@ -70,11 +84,18 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
         body: formData,
       });
 
-      const data = await response.json();
+      const data = await response.json() as ({ success: true; analysis: ResumeAnalysis; questions?: string[] } | ResumeAnalyzeErrorResponse);
       setProgress(100);
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Unable to analyze resume.");
+      if (!response.ok || data.success === false) {
+        const errorData = data as ResumeAnalyzeErrorResponse;
+        const message = errorData.code === "NOT_A_RESUME"
+          ? "This document does not appear to be a resume. Please upload a valid resume or CV."
+          : errorData.code === "UNREADABLE_RESUME"
+            ? "We could not extract readable text from this PDF. Try exporting your resume again as a text-based PDF."
+            : errorData.message || errorData.error || "Unable to analyze resume.";
+        setValidationReason(errorData.validation?.reason || "");
+        throw new Error(message);
       }
 
       setAnalysis(data.analysis);
@@ -83,7 +104,10 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
       toast.success("Resume analyzed successfully.");
     } catch (error) {
       setStatus("error");
-      toast.error(error instanceof Error ? error.message : "Unable to analyze resume.");
+      setProgress(0);
+      const message = error instanceof Error ? error.message : "Unable to analyze resume.";
+      setUploadError(message);
+      toast.error(message);
     }
   };
 
@@ -93,6 +117,8 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
     setProgress(0);
     setAnalysis(null);
     setQuestions([]);
+    setUploadError("");
+    setValidationReason("");
   };
 
   const startResumeInterview = async () => {
@@ -161,9 +187,12 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
         )}
 
         {status === "error" && (
-          <div className="mt-5 flex items-center gap-2 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-200">
-            <XCircle className="h-4 w-4" />
-            We could not analyze the resume. Please try again.
+          <div className="mt-5 flex items-start gap-2 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-200" role="alert">
+            <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="text-red-200">{uploadError || "We could not analyze the resume. Please try again."}</p>
+              {validationReason && <p className="mt-1 text-xs text-red-200/75">{validationReason}</p>}
+            </div>
           </div>
         )}
 
@@ -260,7 +289,7 @@ export default function ResumeUploadFlow({ userId }: ResumeUploadFlowProps) {
           </div>
         ) : (
           <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-dashed border-white/10 bg-dark-100/40 p-6 text-center">
-            <LoaderCircle className="h-8 w-8 animate-spin text-primary-200" />
+            {status === "uploading" ? <LoaderCircle className="h-8 w-8 animate-spin text-primary-200" /> : <FileText className="h-8 w-8 text-primary-200" />}
             <p className="mt-4 text-lg font-semibold text-white">Your resume analysis will appear here.</p>
             <p className="mt-2 max-w-md text-sm text-light-400">Upload a resume to unlock skill insights, strength highlights, and interviewer-ready questions.</p>
           </div>

@@ -25,6 +25,7 @@ interface Interview {
   company?: string;
   companyProfile?: { style: string; focus: string; principles: string[] };
   resumeContext?: string;
+  resumeAnalysisId?: string;
 }
 
 interface CreateFeedbackParams {
@@ -60,6 +61,17 @@ interface AgentProps {
   questions?: string[];
   company?: string;
   companyProfile?: { style: string; focus: string; principles: string[] };
+  resumeContext?: string;
+  resumeAnalysisId?: string;
+}
+
+interface ReplayTranscriptItem { id: string; role: "assistant" | "user"; content: string; timestamp: number; duration: number; }
+interface ReplaySegment { text: string; timestamp: number; duration: number; }
+interface InterviewReplay {
+  id: string; interviewId: string; userId: string; vapiCallId?: string; recordingUrl?: string; storagePath?: string;
+  transcript: ReplayTranscriptItem[]; questions: ReplaySegment[]; answers: ReplaySegment[];
+  score?: number; feedback?: Feedback | Record<string, unknown>; resumeAnalysisId?: string; resumeContext?: string;
+  company?: string; difficulty?: string; startedAt: string; completedAt: string; totalDuration: number;
 }
 
 interface RouteParams {
@@ -130,3 +142,16 @@ interface ResumeAnalysis {
   achievements: string[];
   strengths: string[];
 }
+
+type ResumeValidationResult = {
+  isResume: boolean;
+  confidence: number;
+  reason: string;
+  detectedSections: string[];
+};
+
+type ResumeAnalyzeErrorCode =
+  | "NOT_A_RESUME"
+  | "UNREADABLE_RESUME"
+  | "INVALID_FILE"
+  | "ANALYSIS_FAILED";

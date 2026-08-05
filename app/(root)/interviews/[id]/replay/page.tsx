@@ -1,0 +1,2 @@
+import { notFound, redirect } from "next/navigation"; import ReplayView from "@/components/replay/ReplayView"; import { getCurrentUser } from "@/lib/actions/auth.action"; import { getInterviewReplay } from "@/lib/replay";
+export default async function ReplayPage({ params }: RouteParams) { const { id }=await params; if (!await getCurrentUser()) redirect("/sign-in"); const replay=await getInterviewReplay(id); if (!replay) notFound(); return <ReplayView replay={replay}/>; }

@@ -47,4 +47,5 @@ interface FunctionCallResultMessage extends BaseMessage {
 type Message =
   | TranscriptMessage
   | FunctionCallMessage
-  | FunctionCallResultMessage;
+  | FunctionCallResultMessage
+  | { type: "end-of-call-report"; startedAt?: string; endedAt?: string; artifact?: { recordingUrl?: string; stereoRecordingUrl?: string }; call?: { id?: string; artifact?: { recordingUrl?: string; stereoRecordingUrl?: string } } };

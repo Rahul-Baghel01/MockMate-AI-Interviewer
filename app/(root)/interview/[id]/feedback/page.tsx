@@ -121,6 +121,7 @@ const Feedback = async ({ params }: RouteParams) => {
       </div>
 
       <div className="buttons">
+        <Button className="btn-secondary flex-1"><Link href={`/interviews/${id}/replay`} className="flex w-full justify-center"><p className="text-sm font-semibold text-primary-200">View replay</p></Link></Button>
         <Button className="btn-secondary flex-1">
           <Link href="/" className="flex w-full justify-center">
             <p className="text-sm font-semibold text-primary-200 text-center">
